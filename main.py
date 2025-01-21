@@ -1,5 +1,5 @@
 import os
-import csv
+import json
 import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
@@ -12,7 +12,7 @@ START_URLS = [
 ]
 
 MAX_URLS = 5000  
-OUTPUT_FILE = "scraped_data.csv"
+OUTPUT_FILE = "scraped_data.json"
 MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  
 
 session = requests.Session()
@@ -99,7 +99,6 @@ def scrape_article(url):
         print(f"Unexpected error scraping {url}: {e}")
         return None
 
-
 def get_file_size_in_gb(filename):
     if os.path.exists(filename):
         return os.path.getsize(filename) / (1024 ** 3)  
@@ -115,7 +114,7 @@ def scrape_multiple_urls_parallel(urls, batch_size=100):
             batch_results = list(executor.map(scrape_article, batch))
             batch_results = [res for res in batch_results if res]  
 
-            save_to_csv(batch_results, OUTPUT_FILE)
+            save_to_json(batch_results, OUTPUT_FILE)
 
             current_file_size_gb = get_file_size_in_gb(OUTPUT_FILE)
             print(f"Current collected data size: {current_file_size_gb:.2f} GB")
@@ -124,18 +123,23 @@ def scrape_multiple_urls_parallel(urls, batch_size=100):
                 break
     return results
 
-def save_to_csv(data, filename):
+def save_to_json(data, filename):
     if not data:
         print("No data to save!")
         return
 
     file_exists = os.path.exists(filename)
 
-    with open(filename, mode='a', encoding='utf-8', newline='') as file:
-        writer = csv.DictWriter(file, fieldnames=data[0].keys())
-        if not file_exists:
-            writer.writeheader()
-        writer.writerows(data)
+    if file_exists:
+        with open(filename, mode='r+', encoding='utf-8') as file:
+            existing_data = json.load(file)
+            existing_data.extend(data)
+            file.seek(0)
+            json.dump(existing_data, file, indent=4, ensure_ascii=False)
+    else:
+        with open(filename, mode='w', encoding='utf-8') as file:
+            json.dump(data, file, indent=4, ensure_ascii=False)
+
     print(f"Data successfully saved to {filename}. Current size: {get_file_size_in_gb(filename):.2f} GB")
 
 if __name__ == "__main__":
