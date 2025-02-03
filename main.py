@@ -1,161 +1,245 @@
 import os
 import json
-import requests
+import re
+import asyncio
+import aiohttp
+from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
+from datetime import datetime
+from dateutil import parser as date_parser
+import logging
 from concurrent.futures import ThreadPoolExecutor
 
-
+MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024 
+OUTPUT_FILE = "multi_site_articles.json" 
+CONCURRENT_REQUESTS = 100
+REQUEST_DELAY = 0.5
 START_URLS = [
-    "https://www.novinky.cz",  
-    "https://www.idnes.cz",  
-    "https://www.ctk.cz"  
+    "https://www.idnes.cz",
+    "https://www.novinky.cz",
+    "https://cs.wikipedia.org"
 ]
 
-MAX_URLS = 5000  
-OUTPUT_FILE = "scraped_data.json"
-MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  
+SITE_CONFIG = {
+    "idnes.cz": {
+        "cookies": {
+            "dCMP": "mafra=1111,all=1,reklama=1,part=0,cpex=1,google=1,gemius=1,id5=1,next=0000,onlajny=0000,jenzeny=0000,"
+                    "databazeknih=0000,autojournal=0000,skodahome=0000,skodaklasik=0000,groupm=1,piano=1,seznam=1,geozo=0,"
+                    "czaid=1,click=1,verze=2,"
+        },
+        "selectors": {
+            "title": "h1.art-title",
+            "content": "div.art-text",
+            "category": ".breadcrumb a:last-child",
+            "date": "time[itemprop='datePublished']",
+            "comments": ".comment-count",
+            "images": ".art-gallery"
+        },
+        "article_patterns": [
+            r"/zpravy/",
+            r"/domaci/",
+            r"/ekonomika/"
+        ]
+    },
+    "novinky.cz": {
+        "selectors": {
+            "title": "h1.title",
+            "content": "div.articleBody",
+            "category": "ul.breadcrumb li:last-child a",
+            "date": "time.date",
+            "comments": ".commentsCount",
+            "images": ".gallery img"
+        },
+        "article_patterns": [
+            r"/clanek/",
+            r"/zpravy/"
+        ]
+    },
+    "wikipedia.org": {
+        "selectors": {
+            "title": "h1#firstHeading",
+            "content": "div#mw-content-text",
+            "category": "#p-navigation li a",
+            "date": "li#footer-info-lastmod",
+            "comments": "",
+            "images": "div.thumbinner"
+        },
+        "article_patterns": [
+            r"/wiki/"
+        ]
+    }
+}
 
-session = requests.Session()
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def collect_article_urls(base_url):
-    """Sbírá odkazy na články z dané domény."""
-    collected_urls = set()
-    to_visit = [base_url]
-    visited_urls = set()
+class MultiSiteCrawler:
+    def __init__(self):
+        self.visited_urls = set()
+        self.queue = asyncio.Queue()
+        self.lock = asyncio.Lock()
+        self.session = None
+        self.file_size = 0
+        self.article_count = 0
+        self.executor = ThreadPoolExecutor(max_workers=4)
+        self.articles = [] 
 
-    print(f"Starting URL collection from: {base_url}")
+    async def initialize(self):
+        self.session = aiohttp.ClientSession(
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        )
 
-    while to_visit and len(collected_urls) < MAX_URLS:
-        current_url = to_visit.pop(0)
-        if current_url in visited_urls:
-            continue
-        visited_urls.add(current_url)
+    async def close(self):
+        await self.session.close()
+        self.executor.shutdown()
+        self.save_to_json()  
 
-        print(f"Visiting URL: {current_url} | Collected so far: {len(collected_urls)}")
+    def get_site_config(self, domain):
+        for site in SITE_CONFIG:
+            if site in domain:
+                return SITE_CONFIG[site]
+        return {}
+
+    def is_article_url(self, url):
+        parsed = urlparse(url)
+        config = self.get_site_config(parsed.netloc)
+        return any(re.search(p, parsed.path) for p in config.get("article_patterns", []))
+
+    @staticmethod
+    def clean_text(text):
+        return re.sub(r'\s+', ' ', text).strip()
+
+    def save_to_json(self):
+        """Uloží všechny články do JSON souboru."""
+        if not self.articles:
+            return
 
         try:
-            response = session.get(current_url, timeout=10)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
-
-            for link in soup.find_all('a', href=True):
-                url = link['href']
-                full_url = url if url.startswith("http") else f"{base_url}{url}"
-                if base_url in full_url and full_url not in collected_urls:
-                    collected_urls.add(full_url)
-                    to_visit.append(full_url)
+            with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.articles, f, indent=4, ensure_ascii=False)
+            self.file_size = os.path.getsize(OUTPUT_FILE)
+            logging.info(f"Uloženo {len(self.articles)} článků do {OUTPUT_FILE}")
         except Exception as e:
-            print(f"Error collecting URLs from {current_url}: {e}")
+            logging.error(f"Chyba při ukládání do JSON: {str(e)}")
 
-    print(f"Finished URL collection from: {base_url} | Total collected: {len(collected_urls)}")
-    return list(collected_urls)
+    async def save_article(self, data):
+        """Přidá článek do seznamu a pravidelně ukládá do souboru."""
+        async with self.lock:
+            self.articles.append(data)
+            self.article_count += 1
 
-def scrape_article(url):
-    """Stahuje obsah článku."""
-    print(f"Scraping article: {url}")
+            if len(self.articles) % 100 == 0:
+                self.save_to_json()
+                self.articles = []  
 
-    try:
-        response = session.get(url, timeout=10)
-        response.raise_for_status()
+            if self.file_size >= MAX_FILE_SIZE:
+                logging.info("Dosaženo maximální velikosti souboru.")
+                return False
 
-        if not response.text.strip():
-            print(f"Skipping empty page: {url}")
+        return True
+
+    async def parse_article(self, url):
+        try:
+            parsed = urlparse(url)
+            config = self.get_site_config(parsed.netloc)
+            
+            async with self.session.get(url, cookies=config.get("cookies", {})) as response:
+                if response.status != 200:
+                    return None
+                
+                html = await response.text()
+                loop = asyncio.get_event_loop()
+                soup = await loop.run_in_executor(
+                    self.executor,
+                    lambda: BeautifulSoup(html, "lxml")
+                )
+
+                selectors = config.get("selectors", {})
+                
+                article_data = {
+                    "url": url,
+                    "source": parsed.netloc,
+                    "title": self.clean_text(soup.select_one(selectors["title"]).text) if soup.select_one(selectors["title"]) else "",
+                    "content": self.clean_text(" ".join([p.text for p in soup.select(selectors["content"] + " p")])) if soup.select_one(selectors["content"]) else "",
+                    "category": soup.select_one(selectors["category"]).text.strip() if soup.select_one(selectors["category"]) else "",
+                    "comments": int(soup.select_one(selectors["comments"]).text.strip()) if selectors["comments"] and soup.select_one(selectors["comments"]) else 0,
+                    "images": len(soup.select(selectors["images"])) if selectors.get("images") else 0,
+                    "date": ""
+                }
+
+                date_element = soup.select_one(selectors["date"])
+                if date_element:
+                    date_str = date_element.get("datetime") or date_element.text
+                    try:
+                        dt = date_parser.parse(date_str)
+                        article_data["date"] = dt.isoformat()
+                    except Exception as e:
+                        logging.warning(f"Chyba parsování data: {e}")
+
+                return article_data
+        except Exception as e:
+            logging.error(f"Chyba při zpracování {url}: {str(e)}")
             return None
 
-        soup = BeautifulSoup(response.text, 'html.parser')
+    async def process_url(self, url):
+        if url in self.visited_urls:
+            return
+        
+        async with self.lock:
+            self.visited_urls.add(url)
 
-        title = soup.find('h1').get_text(strip=True) if soup.find('h1') else 'No title'
+        if self.is_article_url(url):
+            article_data = await self.parse_article(url)
+            if article_data:
+                await self.save_article(article_data)
+                logging.info(f"Článků uloženo: {self.article_count} | Velikost: {self.file_size/1024/1024:.2f} MB")
+        else:
+            try:
+                async with self.session.get(url) as response:
+                    if response.status == 200:
+                        html = await response.text()
+                        loop = asyncio.get_event_loop()
+                        soup = await loop.run_in_executor(
+                            self.executor,
+                            lambda: BeautifulSoup(html, "lxml")
+                        )
+                        
+                        for link in soup.find_all("a", href=True):
+                            new_url = urljoin(url, link["href"])
+                            parsed = urlparse(new_url)
+                            if any(site in parsed.netloc for site in SITE_CONFIG) and new_url not in self.visited_urls:
+                                await self.queue.put(new_url)
+            except Exception as e:
+                logging.error(f"Chyba při zpracování {url}: {str(e)}")
 
-        content = ' '.join([p.get_text(strip=True) for p in soup.find_all('p')])
+    async def worker(self):
+        while True:
+            url = await self.queue.get()
+            try:
+                await self.process_url(url)
+            finally:
+                self.queue.task_done()
 
-        images = len(soup.find_all('img'))
+    async def run(self):
+        await self.initialize()
+        
+        for url in START_URLS:
+            await self.queue.put(url)
 
-        category = soup.find('meta', {'property': 'article:section'})
-        category = category['content'] if category else 'No category'
+        workers = [asyncio.create_task(self.worker()) for _ in range(CONCURRENT_REQUESTS)]
+        
+        while not self.queue.empty() and self.file_size < MAX_FILE_SIZE:
+            await asyncio.sleep(1)
 
-        comments = soup.find('a', {'class': 'comments-link'})
-        comments_count = comments.get_text(strip=True) if comments else 'No comments'
-
-        date = soup.find('meta', {'property': 'article:published_time'})
-        date = date['content'] if date else 'No date'
-
-        if not content.strip():
-            print(f"Skipping empty article content: {url}")
-            return None
-
-        return {
-            "url": url,
-            "title": title,
-            "content": content,
-            "images": images,
-            "category": category,
-            "comments_count": comments_count,
-            "date": date,
-        }
-    except requests.exceptions.RequestException as e:
-        print(f"Error scraping {url}: {e}")
-        return None
-    except Exception as e:
-        print(f"Unexpected error scraping {url}: {e}")
-        return None
-
-def get_file_size_in_gb(filename):
-    if os.path.exists(filename):
-        return os.path.getsize(filename) / (1024 ** 3)  
-    return 0
-
-def scrape_multiple_urls_parallel(urls, batch_size=100):
-    results = []
-    total_urls = len(urls)
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        for i in range(0, total_urls, batch_size):
-            batch = urls[i:i + batch_size]
-            print(f"Scraping batch {i // batch_size + 1} | URLs {i + 1}-{min(i + batch_size, total_urls)}")
-            batch_results = list(executor.map(scrape_article, batch))
-            batch_results = [res for res in batch_results if res]  
-
-            save_to_json(batch_results, OUTPUT_FILE)
-
-            current_file_size_gb = get_file_size_in_gb(OUTPUT_FILE)
-            print(f"Current collected data size: {current_file_size_gb:.2f} GB")
-            if current_file_size_gb >= MAX_FILE_SIZE / (1024 ** 3):
-                print(f"Reached file size limit of {MAX_FILE_SIZE / (1024 ** 3):.2f} GB. Stopping scraping.")
-                break
-    return results
-
-def save_to_json(data, filename):
-    if not data:
-        print("No data to save!")
-        return
-
-    file_exists = os.path.exists(filename)
-
-    if file_exists:
-        with open(filename, mode='r+', encoding='utf-8') as file:
-            existing_data = json.load(file)
-            existing_data.extend(data)
-            file.seek(0)
-            json.dump(existing_data, file, indent=4, ensure_ascii=False)
-    else:
-        with open(filename, mode='w', encoding='utf-8') as file:
-            json.dump(data, file, indent=4, ensure_ascii=False)
-
-    print(f"Data successfully saved to {filename}. Current size: {get_file_size_in_gb(filename):.2f} GB")
+        for worker in workers:
+            worker.cancel()
+        
+        await self.close()
+        logging.info(f"Konečná velikost souboru: {self.file_size/1024/1024:.2f} MB")
 
 if __name__ == "__main__":
-    all_collected_urls = []
-
-    for start_url in START_URLS:
-        print(f"Collecting URLs from {start_url}...")
-        urls = collect_article_urls(start_url)
-        all_collected_urls.extend(urls)
-        print(f"Collected {len(urls)} URLs from {start_url}")
-
-    all_collected_urls = list(set(all_collected_urls))
-    print(f"Total collected unique URLs: {len(all_collected_urls)}")
-
-    print("Scraping data from articles...")
-    scrape_multiple_urls_parallel(all_collected_urls)
-
-    final_file_size_gb = get_file_size_in_gb(OUTPUT_FILE)
-    print(f"Scraping completed. Total data collected: {final_file_size_gb:.2f} GB")
+    crawler = MultiSiteCrawler()
+    
+    try:
+        asyncio.run(crawler.run())
+    except KeyboardInterrupt:
+        logging.info("Ukončeno uživatelem")
