@@ -173,20 +173,20 @@ class MultiSiteCrawler:
     def parse_date(date_str):
         if not date_str:
             return ""
+        
+        try:
+            for fmt in ["%d. %m. %Y v %H:%M", "%Y-%m-%dT%H:%M:%S", "%d %b %Y"]:
+                try:
+                    dt = datetime.strptime(date_str, fmt)
+                    return dt.isoformat()
+                except ValueError:
+                    continue
+            logging.warning(f"Neznámý formát data: {date_str}")
+            return ""
+        except Exception as e:
+            logging.error(f"Chyba při parsování data: {str(e)}")
+            return ""
 
-        match = re.search(r"(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4})\s?v\s?(\d{1,2}):(\d{2})", date_str)
-        if match:
-            day, month, year, hour, minute = match.groups()
-            date_cleaned = f"{year}-{month}-{day} {hour}:{minute}"
-            try:
-                dt = datetime.strptime(date_cleaned, "%Y-%m-%d %H:%M")
-                return dt.isoformat()
-            except ValueError:
-                logging.warning(f"Chyba parsování data: {date_str}")
-                return ""
-
-        logging.warning(f"Neznámý formát data: {date_str}")
-        return ""
 
     async def parse_article(self, url):
         try:
@@ -233,48 +233,35 @@ class MultiSiteCrawler:
 
 
     async def process_url(self, url):
-        """Zpracuje URL - pokud je to článek, uloží ho, jinak prozkoumá odkazy."""
-        
-        # Zamezení opakovanému zpracování
         if url in self.visited_urls:
             return
         
         async with self.lock:
             self.visited_urls.add(url)
 
-        parsed = urlparse(url)
-        site_config = self.get_site_config(parsed.netloc)
-
-        # Zpracování článků
         if self.is_article_url(url):
             article_data = await self.parse_article(url)
             if article_data:
                 await self.save_article(article_data)
-                logging.info(f"Článků uloženo: {self.article_count} | Velikost: {self.file_size / 1024 / 1024:.2f} MB")
-            return
-
-        # Procházení stránek a hledání odkazů
-        try:
-            async with self.session.get(url) as response:
-                if response.status != 200:
-                    return
-
-                html = await response.text()
-                soup = await asyncio.get_event_loop().run_in_executor(
-                    self.executor, lambda: BeautifulSoup(html, "lxml")
-                )
-
-                # Hledání odkazů
-                for link in soup.find_all("a", href=True):
-                    new_url = urljoin(url, link["href"])
-                    new_parsed = urlparse(new_url)
-
-                    # Kontrola, zda URL patří mezi podporované nebo nové české domény
-                    if (new_parsed.netloc.endswith(".cz") or new_parsed.netloc in SITE_CONFIG) and new_url not in self.visited_urls:
-                        await self.queue.put(new_url)
-
-        except Exception as e:
-            logging.error(f"Chyba při zpracování {url}: {str(e)}")
+                logging.info(f"Článků uloženo: {self.article_count} | Velikost: {self.file_size/1024/1024:.2f} MB")
+        else:
+            try:
+                async with self.session.get(url) as response:
+                    if response.status == 200:
+                        html = await response.text()
+                        loop = asyncio.get_event_loop()
+                        soup = await loop.run_in_executor(
+                            self.executor,
+                            lambda: BeautifulSoup(html, "lxml")
+                        )
+                        
+                        for link in soup.find_all("a", href=True):
+                            new_url = urljoin(url, link["href"])
+                            parsed = urlparse(new_url)
+                            if any(site in parsed.netloc for site in SITE_CONFIG) and new_url not in self.visited_urls:
+                                await self.queue.put(new_url)
+            except Exception as e:
+                logging.error(f"Chyba při zpracování {url}: {str(e)}")
 
     async def worker(self):
         while True:
