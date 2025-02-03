@@ -84,26 +84,10 @@ class MultiSiteCrawler:
         self.save_to_json()  
 
     def get_site_config(self, domain):
-        if domain == "cs.wikipedia.org":
-            return SITE_CONFIG["cs.wikipedia.org"]
-        elif domain == "idnes.cz":
-            return SITE_CONFIG["idnes.cz"]
-        elif domain == "novinky.cz":
-            return SITE_CONFIG["novinky.cz"]
-        
-        # Pokud doména není v SITE_CONFIG, vrátíme základní konfiguraci
-        logging.info(f"Neznámý web: {domain}, vytvářím základní konfiguraci.")
-        return {
-            "selectors": {
-                "title": "h1",
-                "content": "article, div.content, div.post-body",
-                "category": "nav a, .breadcrumb a",
-                "date": "time, .date, .published",
-                "comments": ".comments, .comment-count",
-                "images": "img"
-            }
-        }
-    
+        for site in SITE_CONFIG:
+            if site in domain:
+                return SITE_CONFIG[site]
+        return {}
 
     async def is_article_url(self, url):
         parsed = urlparse(url)
