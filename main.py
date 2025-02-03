@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB
 OUTPUT_FILE = "multi_site_articles.json"
 CONCURRENT_REQUESTS = 100  # Sníženo pro stabilitu
-REQUEST_DELAY = 0.1
+REQUEST_DELAY = 0.3
 START_URLS = [
     "https://www.idnes.cz",
     "https://www.novinky.cz",
