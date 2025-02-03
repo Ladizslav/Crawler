@@ -6,21 +6,20 @@ import aiohttp
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from datetime import datetime
-from dateutil import parser as date_parser
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
-MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024 
-OUTPUT_FILE = "multi_site_articles.json" 
-CONCURRENT_REQUESTS = 5000
-MAX_URLS = 10000  
+# Konfigurace
+MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB
+OUTPUT_FILE = "multi_site_articles.json"
+CONCURRENT_REQUESTS = 50  # Sníženo pro stabilitu
+MAX_URLS = 1000  # Sníženo pro testování
 REQUEST_DELAY = 0.5
 START_URLS = [
     "https://www.idnes.cz",
     "https://www.novinky.cz",
     "https://cs.wikipedia.org"
 ]
-
 
 SITE_CONFIG = {
     "idnes.cz": {
@@ -60,6 +59,7 @@ SITE_CONFIG = {
     }
 }
 
+# Nastavení logování
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class MultiSiteCrawler:
@@ -71,7 +71,7 @@ class MultiSiteCrawler:
         self.file_size = 0
         self.article_count = 0
         self.executor = ThreadPoolExecutor(max_workers=4)
-        self.articles = [] 
+        self.articles = []
 
     async def initialize(self):
         self.session = aiohttp.ClientSession(
@@ -81,7 +81,7 @@ class MultiSiteCrawler:
     async def close(self):
         await self.session.close()
         self.executor.shutdown()
-        self.save_to_json()  
+        self.save_to_json()
 
     def get_site_config(self, domain):
         for site in SITE_CONFIG:
@@ -91,26 +91,26 @@ class MultiSiteCrawler:
 
     async def is_article_url(self, url):
         parsed = urlparse(url)
-        config = self.get_site_config(parsed.netloc)  
+        config = self.get_site_config(parsed.netloc)
         try:
             async with self.session.get(url, cookies=config.get("cookies", {})) as response:
                 if response.status != 200:
                     return False
-                
+
                 html = await response.text()
                 loop = asyncio.get_event_loop()
                 soup = await loop.run_in_executor(
                     self.executor,
                     lambda: BeautifulSoup(html, "lxml")
                 )
-                
+
                 # Pokud stránka má selektor pro titul a obsah, považujeme ji za článek
                 if soup.select_one(config["selectors"]["title"]) and soup.select_one(config["selectors"]["content"]):
                     return True
 
         except Exception as e:
             logging.error(f"Chyba při zpracování {url}: {str(e)}")
-        
+
         return False
 
     @staticmethod
@@ -123,7 +123,7 @@ class MultiSiteCrawler:
             return
 
         existing_data = []
-        
+
         # Pokud soubor existuje, načteme jeho obsah
         if os.path.exists(OUTPUT_FILE):
             try:
@@ -154,7 +154,7 @@ class MultiSiteCrawler:
 
             if len(self.articles) % 100 == 0:
                 self.save_to_json()
-                self.articles = []  
+                self.articles = []
 
             if self.file_size >= MAX_FILE_SIZE:
                 logging.info("Dosaženo maximální velikosti souboru.")
@@ -166,7 +166,7 @@ class MultiSiteCrawler:
     def parse_date(date_str):
         if not date_str:
             return ""
-        
+
         try:
             for fmt in ["%d. %m. %Y v %H:%M", "%Y-%m-%dT%H:%M:%S", "%d %b %Y"]:
                 try:
@@ -180,16 +180,15 @@ class MultiSiteCrawler:
             logging.error(f"Chyba při parsování data: {str(e)}")
             return ""
 
-
     async def parse_article(self, url):
         try:
             parsed = urlparse(url)
             config = self.get_site_config(parsed.netloc)
-            
+
             async with self.session.get(url, cookies=config.get("cookies", {})) as response:
                 if response.status != 200:
                     return None
-                
+
                 html = await response.text()
                 loop = asyncio.get_event_loop()
                 soup = await loop.run_in_executor(
@@ -198,7 +197,7 @@ class MultiSiteCrawler:
                 )
 
                 selectors = config.get("selectors", {})
-                
+
                 article_data = {
                     "url": url,
                     "source": parsed.netloc,
@@ -213,23 +212,21 @@ class MultiSiteCrawler:
                 date_element = soup.select_one(selectors["date"])
                 if date_element:
                     date_str = date_element.get("datetime") or date_element.text
-                    article_data["date"] = self.parse_date(date_str)  
+                    article_data["date"] = self.parse_date(date_str)
 
                 return article_data
         except Exception as e:
             logging.error(f"Chyba při zpracování {url}: {str(e)}")
             return None
 
-
     async def process_url(self, url):
         if url in self.visited_urls:
             return
-        
+
         async with self.lock:
             self.visited_urls.add(url)
 
-        # Použijte await pro asynchronní funkci
-        if await self.is_article_url(url):  # Tady přidáme await
+        if await self.is_article_url(url):
             article_data = await self.parse_article(url)
             if article_data:
                 await self.save_article(article_data)
@@ -244,15 +241,13 @@ class MultiSiteCrawler:
                             self.executor,
                             lambda: BeautifulSoup(html, "lxml")
                         )
-                        
+
                         for link in soup.find_all("a", href=True):
                             new_url = urljoin(url, link["href"])
                             parsed = urlparse(new_url)
-                            
-                            # Přidej pouze relevantní URL do fronty
+
                             if any(site in parsed.netloc for site in SITE_CONFIG) and new_url not in self.visited_urls:
-                                if await self.is_article_url(new_url) or not await self.is_article_url(url):
-                                    await self.queue.put(new_url)
+                                await self.queue.put(new_url)
             except Exception as e:
                 logging.error(f"Chyba při zpracování {url}: {str(e)}")
 
@@ -266,24 +261,24 @@ class MultiSiteCrawler:
 
     async def run(self):
         await self.initialize()
-        
+
         for url in START_URLS:
             await self.queue.put(url)
 
         workers = [asyncio.create_task(self.worker()) for _ in range(CONCURRENT_REQUESTS)]
-        
-        while not self.queue.empty() or self.article_count < MAX_URLS:
+
+        while not self.queue.empty() and self.article_count < MAX_URLS:
             await asyncio.sleep(1)
 
         for worker in workers:
             worker.cancel()
-        
+
         await self.close()
         logging.info(f"Konečná velikost souboru: {self.file_size/1024/1024:.2f} MB")
 
 if __name__ == "__main__":
     crawler = MultiSiteCrawler()
-    
+
     try:
         asyncio.run(crawler.run())
     except KeyboardInterrupt:
