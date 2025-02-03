@@ -10,10 +10,10 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 
 # Konfigurace
-MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB
+MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024 
 OUTPUT_FILE = "multi_site_articles.json"
-CONCURRENT_REQUESTS = 50  # Sníženo pro stabilitu
-MAX_URLS = 1000  # Sníženo pro testování
+CONCURRENT_REQUESTS = 50000  
+MAX_URLS = 100000  
 REQUEST_DELAY = 0.5
 START_URLS = [
     "https://www.idnes.cz",
