@@ -36,11 +36,6 @@ SITE_CONFIG = {
             "comments": ".comment-count",
             "images": ".art-gallery"
         },
-        "article_patterns": [
-            r"/zpravy/",
-            r"/domaci/",
-            r"/ekonomika/"
-        ]
     },
     "novinky.cz": {
         "selectors": {
@@ -51,10 +46,6 @@ SITE_CONFIG = {
             "comments": ".commentsCount",
             "images": ".gallery img"
         },
-        "article_patterns": [
-            r"/clanek/",
-            r"/zpravy/"
-        ]
     },
     "wikipedia.org": {
         "selectors": {
@@ -65,9 +56,6 @@ SITE_CONFIG = {
             "comments": "",
             "images": "div.thumbinner"
         },
-        "article_patterns": [
-            r"/wiki/"
-        ]
     }
 }
 
@@ -94,10 +82,15 @@ class MultiSiteCrawler:
         self.executor.shutdown()
         self.save_to_json()  
 
-    def get_site_config(self, domain):  
-        if domain in SITE_CONFIG:
-            return SITE_CONFIG[domain]
+    def get_site_config(self, domain):
+        if domain == "wikipedia.org":
+            return SITE_CONFIG["wikipedia.org"]
+        elif domain == "idnes.cz":
+            return SITE_CONFIG["idnes.cz"]
+        elif domain == "novinky.cz":
+            return SITE_CONFIG["novinky.cz"]
         
+        # Pokud doména není v SITE_CONFIG, vrátíme základní konfiguraci
         logging.info(f"Neznámý web: {domain}, vytvářím základní konfiguraci.")
         return {
             "selectors": {
@@ -107,15 +100,33 @@ class MultiSiteCrawler:
                 "date": "time, .date, .published",
                 "comments": ".comments, .comment-count",
                 "images": "img"
-            },
-            "article_patterns": [r"/"]
+            }
         }
+    
 
-
-    def is_article_url(self, url):
+    async def is_article_url(self, url):
         parsed = urlparse(url)
-        config = self.get_site_config(parsed.netloc)
-        return any(re.search(p, parsed.path) for p in config.get("article_patterns", []))
+        config = self.get_site_config(parsed.netloc)  
+        try:
+            async with self.session.get(url, cookies=config.get("cookies", {})) as response:
+                if response.status != 200:
+                    return False
+                
+                html = await response.text()
+                loop = asyncio.get_event_loop()
+                soup = await loop.run_in_executor(
+                    self.executor,
+                    lambda: BeautifulSoup(html, "lxml")
+                )
+                
+                # Pokud stránka má selektor pro titul a obsah, považujeme ji za článek
+                if soup.select_one(config["selectors"]["title"]) and soup.select_one(config["selectors"]["content"]):
+                    return True
+
+        except Exception as e:
+            logging.error(f"Chyba při zpracování {url}: {str(e)}")
+        
+        return False
 
     @staticmethod
     def clean_text(text):
@@ -251,8 +262,11 @@ class MultiSiteCrawler:
                         for link in soup.find_all("a", href=True):
                             new_url = urljoin(url, link["href"])
                             parsed = urlparse(new_url)
+                            
+                            # Přidej pouze relevantní URL do fronty
                             if any(site in parsed.netloc for site in SITE_CONFIG) and new_url not in self.visited_urls:
-                                await self.queue.put(new_url)
+                                if self.is_article_url(new_url) or not self.is_article_url(url):
+                                    await self.queue.put(new_url)
             except Exception as e:
                 logging.error(f"Chyba při zpracování {url}: {str(e)}")
 
@@ -272,7 +286,7 @@ class MultiSiteCrawler:
 
         workers = [asyncio.create_task(self.worker()) for _ in range(CONCURRENT_REQUESTS)]
         
-        while not self.queue.empty() and self.file_size < MAX_FILE_SIZE:
+        while not self.queue.empty() or self.article_count < MAX_URLS:
             await asyncio.sleep(1)
 
         for worker in workers:
