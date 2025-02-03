@@ -7,6 +7,8 @@ import logging
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import random
+from threading import Lock
+from queue import Queue
 
 # Nastavení cookies pro připojení
 cookies = {
@@ -50,7 +52,7 @@ def extract_article_data(url):
 
 
 # Funkce pro crawlování jednoho URL
-def crawl(url, visited_urls, to_visit_urls, articles_data):
+def crawl(url, visited_urls, to_visit_urls, articles_queue, lock):
     if url in visited_urls:
         return
 
@@ -60,7 +62,8 @@ def crawl(url, visited_urls, to_visit_urls, articles_data):
 
     article_data = extract_article_data(url)
     if article_data:
-        articles_data.append(article_data)
+        with lock:
+            articles_queue.put(article_data)  # Použití zámku pro bezpečné přidání dat
         logging.info(f"Data pro URL {url} uložena")
 
     # Přidání odkazů na další články do fronty
@@ -76,14 +79,15 @@ def crawl(url, visited_urls, to_visit_urls, articles_data):
     except Exception as e:
         logging.error(f"Chyba při získávání dalších odkazů z {url}: {e}")
 
-
 # Funkce pro průběžné ukládání dat a správu souborů
-def save_data_in_chunks(articles_data, file_prefix='articles_data', chunk_size=100, max_size=2*1024*1024*1024):
+# Funkce pro průběžné ukládání dat a správu souborů
+def save_data_in_chunks(articles_queue, file_prefix='articles_data', chunk_size=100, max_size=2*1024*1024*1024):
     chunk = []
     file_count = 1
     file_path = f'{file_prefix}_{file_count}.json'
 
-    for article in articles_data:
+    while not articles_queue.empty():
+        article = articles_queue.get()  # Bezpečně vyjmutí článku
         chunk.append(article)
         
         # Pokud je velikost souboru větší než 2 GB, vytvoříme nový soubor
@@ -93,28 +97,30 @@ def save_data_in_chunks(articles_data, file_prefix='articles_data', chunk_size=1
             chunk = []  # Resetujeme chunk
 
         if len(chunk) >= chunk_size:
-            with open(file_path, 'w', encoding='utf-8') as f:
+            # Otevření souboru v režimu append ('a'), aby se přidávaly nové články
+            with open(file_path, 'a', encoding='utf-8') as f:
                 json.dump(chunk, f, ensure_ascii=False, indent=4)
             chunk = []  # Resetujeme chunk
 
-    # Uložit poslední část, pokud nějaká zůstala
     if chunk:
-        with open(file_path, 'w', encoding='utf-8') as f:
+        with open(file_path, 'a', encoding='utf-8') as f:
             json.dump(chunk, f, ensure_ascii=False, indent=4)
+
 
 
 # Hlavní funkce pro spuštění paralelního crawlování
 def start_crawl(start_urls):
     visited_urls = set()  # Sada pro navštívené URL
     to_visit_urls = start_urls.copy()  # Seznam pro URL k navštívení
-    articles_data = []  # Uložená data
+    articles_queue = Queue()  # Použití fronty pro bezpečné přidávání dat mezi vlákny
+    lock = Lock()  # Zámek pro synchronizaci přístupu k shared resource
 
     # Nastavení maximálního počtu vláken
-    max_threads = 20
+    max_threads = 50
     with ThreadPoolExecutor(max_workers=max_threads) as executor:
         while to_visit_urls:
             # Vytvoření tasků pro paralelní zpracování URL
-            futures = [executor.submit(crawl, url, visited_urls, to_visit_urls, articles_data) for url in
+            futures = [executor.submit(crawl, url, visited_urls, to_visit_urls, articles_queue, lock) for url in
                        to_visit_urls[:max_threads]]
 
             # Čekání na dokončení tasků
@@ -123,7 +129,7 @@ def start_crawl(start_urls):
 
             # Po zpracování pár URL, odstraníme je ze seznamu 'to_visit_urls'
             to_visit_urls = to_visit_urls[max_threads:]
-            save_data_in_chunks(articles_data)
+            save_data_in_chunks(articles_queue)
 
             # Pauza mezi požadavky, aby se snížilo zatížení serveru
             time.sleep(random.uniform(1, 3))  # Náhodná pauza mezi 1 a 3 sekundy
