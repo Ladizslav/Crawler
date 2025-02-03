@@ -12,13 +12,18 @@ from concurrent.futures import ThreadPoolExecutor
 
 MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024 
 OUTPUT_FILE = "multi_site_articles.json" 
-CONCURRENT_REQUESTS = 100
-REQUEST_DELAY = 0.5
+CONCURRENT_REQUESTS = 50000
+REQUEST_DELAY = 0.1
 START_URLS = [
     "https://www.idnes.cz",
     "https://www.novinky.cz",
-    "https://cs.wikipedia.org"
+    "https://cs.wikipedia.org",
+    "https://www.seznamzpravy.cz",
+    "https://echo24.cz",
+    "https://www.aktualne.cz",
+    "https://denikn.cz"
 ]
+
 
 SITE_CONFIG = {
     "idnes.cz": {
@@ -93,11 +98,23 @@ class MultiSiteCrawler:
         self.executor.shutdown()
         self.save_to_json()  
 
-    def get_site_config(self, domain):
-        for site in SITE_CONFIG:
-            if site in domain:
-                return SITE_CONFIG[site]
-        return {}
+    def get_site_config(domain):
+        if domain in SITE_CONFIG:
+            return SITE_CONFIG[domain]
+        
+        logging.info(f"Neznámý web: {domain}, vytvářím základní konfiguraci.")
+        return {
+            "selectors": {
+                "title": "h1",
+                "content": "article, div.content, div.post-body",
+                "category": "nav a, .breadcrumb a",
+                "date": "time, .date, .published",
+                "comments": ".comments, .comment-count",
+                "images": "img"
+            },
+            "article_patterns": [r"/"]
+        }
+
 
     def is_article_url(self, url):
         parsed = urlparse(url)
@@ -216,35 +233,48 @@ class MultiSiteCrawler:
 
 
     async def process_url(self, url):
+        """Zpracuje URL - pokud je to článek, uloží ho, jinak prozkoumá odkazy."""
+        
+        # Zamezení opakovanému zpracování
         if url in self.visited_urls:
             return
         
         async with self.lock:
             self.visited_urls.add(url)
 
+        parsed = urlparse(url)
+        site_config = self.get_site_config(parsed.netloc)
+
+        # Zpracování článků
         if self.is_article_url(url):
             article_data = await self.parse_article(url)
             if article_data:
                 await self.save_article(article_data)
-                logging.info(f"Článků uloženo: {self.article_count} | Velikost: {self.file_size/1024/1024:.2f} MB")
-        else:
-            try:
-                async with self.session.get(url) as response:
-                    if response.status == 200:
-                        html = await response.text()
-                        loop = asyncio.get_event_loop()
-                        soup = await loop.run_in_executor(
-                            self.executor,
-                            lambda: BeautifulSoup(html, "lxml")
-                        )
-                        
-                        for link in soup.find_all("a", href=True):
-                            new_url = urljoin(url, link["href"])
-                            parsed = urlparse(new_url)
-                            if any(site in parsed.netloc for site in SITE_CONFIG) and new_url not in self.visited_urls:
-                                await self.queue.put(new_url)
-            except Exception as e:
-                logging.error(f"Chyba při zpracování {url}: {str(e)}")
+                logging.info(f"Článků uloženo: {self.article_count} | Velikost: {self.file_size / 1024 / 1024:.2f} MB")
+            return
+
+        # Procházení stránek a hledání odkazů
+        try:
+            async with self.session.get(url) as response:
+                if response.status != 200:
+                    return
+
+                html = await response.text()
+                soup = await asyncio.get_event_loop().run_in_executor(
+                    self.executor, lambda: BeautifulSoup(html, "lxml")
+                )
+
+                # Hledání odkazů
+                for link in soup.find_all("a", href=True):
+                    new_url = urljoin(url, link["href"])
+                    new_parsed = urlparse(new_url)
+
+                    # Kontrola, zda URL patří mezi podporované nebo nové české domény
+                    if (new_parsed.netloc.endswith(".cz") or new_parsed.netloc in SITE_CONFIG) and new_url not in self.visited_urls:
+                        await self.queue.put(new_url)
+
+        except Exception as e:
+            logging.error(f"Chyba při zpracování {url}: {str(e)}")
 
     async def worker(self):
         while True:
