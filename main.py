@@ -111,6 +111,23 @@ class MultiSiteCrawler:
 
         return False
 
+    async def fetch_with_retry(self, url, max_retries=3, delay=1):
+        retries = 0
+        while retries < max_retries:
+            try:
+                async with self.session.get(url) as response:
+                    if response.status == 200:
+                        return await response.text()
+                    else:
+                        logging.warning(f"Chyba při načítání {url}: Status {response.status}")
+                        return None
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                retries += 1
+                logging.warning(f"Pokus {retries}/{max_retries}: Chyba při načítání {url}: {str(e)}")
+                await asyncio.sleep(delay)
+        logging.error(f"Selhalo načítání {url} po {max_retries} pokusech.")
+        return None
+
     @staticmethod
     def clean_text(text):
         return re.sub(r'\s+', ' ', text).strip()
@@ -185,36 +202,35 @@ class MultiSiteCrawler:
             parsed = urlparse(url)
             config = self.get_site_config(parsed.netloc)
 
-            async with self.session.get(url, cookies=config.get("cookies", {})) as response:
-                if response.status != 200:
-                    return None
+            html = await self.fetch_with_retry(url)
+            if not html:
+                return None
 
-                html = await response.text()
-                loop = asyncio.get_event_loop()
-                soup = await loop.run_in_executor(
-                    self.executor,
-                    lambda: BeautifulSoup(html, "lxml") if "xml" not in response.headers.get("Content-Type", "").lower() else BeautifulSoup(html, features="xml")
-                )
+            loop = asyncio.get_event_loop()
+            soup = await loop.run_in_executor(
+                self.executor,
+                lambda: BeautifulSoup(html, "lxml") if "xml" not in html.lower() else BeautifulSoup(html, features="xml")
+            )
 
-                selectors = config.get("selectors", {})
+            selectors = config.get("selectors", {})
 
-                article_data = {
-                    "url": url,
-                    "source": parsed.netloc,
-                    "title": self.clean_text(soup.select_one(selectors["title"]).text) if soup.select_one(selectors["title"]) else "",
-                    "content": self.clean_text(" ".join([p.text for p in soup.select(selectors["content"] + " p")])) if soup.select_one(selectors["content"]) else "",
-                    "category": soup.select_one(selectors["category"]).text.strip() if soup.select_one(selectors["category"]) else "",
-                    "comments": int(soup.select_one(selectors["comments"]).text.strip()) if selectors["comments"] and soup.select_one(selectors["comments"]) else 0,
-                    "images": len(soup.select(selectors["images"])) if selectors.get("images") else 0,
-                    "date": ""
-                }
+            article_data = {
+                "url": url,
+                "source": parsed.netloc,
+                "title": self.clean_text(soup.select_one(selectors["title"]).text) if soup.select_one(selectors["title"]) else "",
+                "content": self.clean_text(" ".join([p.text for p in soup.select(selectors["content"] + " p")])) if soup.select_one(selectors["content"]) else "",
+                "category": soup.select_one(selectors["category"]).text.strip() if soup.select_one(selectors["category"]) else "",
+                "comments": int(soup.select_one(selectors["comments"]).text.strip()) if selectors["comments"] and soup.select_one(selectors["comments"]) else 0,
+                "images": len(soup.select(selectors["images"])) if selectors.get("images") else 0,
+                "date": ""
+            }
 
-                date_element = soup.select_one(selectors["date"])
-                if date_element:
-                    date_str = date_element.get("datetime") or date_element.text
-                    article_data["date"] = self.parse_date(date_str)
+            date_element = soup.select_one(selectors["date"])
+            if date_element:
+                date_str = date_element.get("datetime") or date_element.text
+                article_data["date"] = self.parse_date(date_str)
 
-                return article_data
+            return article_data
         except Exception as e:
             logging.error(f"Chyba při zpracování {url}: {str(e)}")
             return None
@@ -225,6 +241,9 @@ class MultiSiteCrawler:
 
         async with self.lock:
             self.visited_urls.add(url)
+
+        # Přidejte zpoždění mezi požadavky
+        await asyncio.sleep(REQUEST_DELAY)
 
         # Ignorovat neplatné nebo nečlánkové URL
         if "undefined" in url or "ucet" in url or "prihlasit" in url or "podminky" in url or "tiraz" in url:
@@ -238,31 +257,30 @@ class MultiSiteCrawler:
                 logging.info(f"Článků uloženo: {self.article_count} | Velikost: {self.file_size/1024/1024:.2f} MB")
         else:
             try:
-                async with self.session.get(url) as response:
-                    if response.status == 200:
-                        html = await response.text()
-                        loop = asyncio.get_event_loop()
-                        soup = await loop.run_in_executor(
-                            self.executor,
-                            lambda: BeautifulSoup(html, "lxml") if "xml" not in response.headers.get("Content-Type", "").lower() else BeautifulSoup(html, features="xml")
-                        )
+                html = await self.fetch_with_retry(url)
+                if html:
+                    loop = asyncio.get_event_loop()
+                    soup = await loop.run_in_executor(
+                        self.executor,
+                        lambda: BeautifulSoup(html, "lxml") if "xml" not in html.lower() else BeautifulSoup(html, features="xml")
+                    )
 
-                        links = soup.find_all("a", href=True)
-                        logging.info(f"Na stránce {url} nalezeno {len(links)} odkazů.")
+                    links = soup.find_all("a", href=True)
+                    logging.info(f"Na stránce {url} nalezeno {len(links)} odkazů.")
 
-                        for link in links:
-                            new_url = urljoin(url, link["href"])
-                            parsed = urlparse(new_url)
+                    for link in links:
+                        new_url = urljoin(url, link["href"])
+                        parsed = urlparse(new_url)
 
-                            # Ignorovat neplatné nebo nečlánkové URL
-                            if "undefined" in new_url or "ucet" in new_url or "prihlasit" in new_url or "podminky" in new_url or "tiraz" in new_url:
-                                continue
+                        # Ignorovat neplatné nebo nečlánkové URL
+                        if "undefined" in new_url or "ucet" in new_url or "prihlasit" in new_url or "podminky" in new_url or "tiraz" in new_url:
+                            continue
 
-                            if any(site in parsed.netloc for site in SITE_CONFIG) and new_url not in self.visited_urls:
-                                await self.process_url(new_url)  # Rekurzivní volání
+                        if any(site in parsed.netloc for site in SITE_CONFIG) and new_url not in self.visited_urls:
+                            await self.process_url(new_url)  # Rekurzivní volání
             except Exception as e:
                 logging.error(f"Chyba při zpracování {url}: {str(e)}")
-
+                
     async def run(self):
         await self.initialize()
 
