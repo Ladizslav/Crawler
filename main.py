@@ -17,11 +17,7 @@ REQUEST_DELAY = 0.1
 START_URLS = [
     "https://www.idnes.cz",
     "https://www.novinky.cz",
-    "https://cs.wikipedia.org",
-    "https://www.seznamzpravy.cz",
-    "https://echo24.cz",
-    "https://www.aktualne.cz",
-    "https://denikn.cz"
+    "https://cs.wikipedia.org"
 ]
 
 
