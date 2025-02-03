@@ -12,8 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 # Konfigurace
 MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024 
 OUTPUT_FILE = "multi_site_articles.json"
-CONCURRENT_REQUESTS = 50000  
-MAX_URLS = 100000  
+CONCURRENT_REQUESTS = 50000   
 REQUEST_DELAY = 0.5
 START_URLS = [
     "https://www.idnes.cz",
@@ -152,10 +151,11 @@ class MultiSiteCrawler:
             self.articles.append(data)
             self.article_count += 1
 
-            if len(self.articles) % 100 == 0:
+            if len(self.articles) % 100 == 0 or self.file_size >= MAX_FILE_SIZE:
                 self.save_to_json()
                 self.articles = []
 
+            # Zastavení, pokud je dosaženo maximální velikosti
             if self.file_size >= MAX_FILE_SIZE:
                 logging.info("Dosaženo maximální velikosti souboru.")
                 return False
@@ -168,7 +168,7 @@ class MultiSiteCrawler:
             return ""
 
         try:
-            for fmt in ["%d. %m. %Y v %H:%M", "%Y-%m-%dT%H:%M:%S", "%d %b %Y"]:
+            for fmt in ["%d. %m. %Y v %H:%M", "%Y-%m-%dT%H:%M:%S", "%d %b %Y", "%d. %m. %Y"]:
                 try:
                     dt = datetime.strptime(date_str, fmt)
                     return dt.isoformat()
@@ -267,7 +267,7 @@ class MultiSiteCrawler:
 
         workers = [asyncio.create_task(self.worker()) for _ in range(CONCURRENT_REQUESTS)]
 
-        while not self.queue.empty() and self.article_count < MAX_URLS:
+        while self.file_size < MAX_FILE_SIZE:
             await asyncio.sleep(1)
 
         for worker in workers:
