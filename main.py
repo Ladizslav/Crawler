@@ -15,6 +15,7 @@ OUTPUT_FILE = "multi_site_articles.json"
 CONCURRENT_REQUESTS = 100  # Zvýšeno pro rychlejší crawling
 MAX_URLS = 1000000  # Velké číslo, aby se ignoroval limit počtu URL
 REQUEST_DELAY = 0.5
+MAX_DEPTH = 3  # Maximální hloubka procházení
 START_URLS = [
     "https://www.idnes.cz",
     "https://www.novinky.cz",
@@ -105,7 +106,9 @@ class MultiSiteCrawler:
                 )
 
                 # Pokud stránka má selektor pro titul a obsah, považujeme ji za článek
-                if soup.select_one(config["selectors"]["title"]) and soup.select_one(config["selectors"]["content"]):
+                title = soup.select_one(config["selectors"]["title"])
+                content = soup.select_one(config["selectors"]["content"])
+                if title and content and len(content.text.strip()) > 100:  # Minimální délka obsahu
                     return True
 
         except Exception as e:
@@ -221,12 +224,17 @@ class MultiSiteCrawler:
             logging.error(f"Chyba při zpracování {url}: {str(e)}")
             return None
 
-    async def process_url(self, url):
-        if url in self.visited_urls:
+    async def process_url(self, url, depth=0):
+        if url in self.visited_urls or depth > MAX_DEPTH:
             return
 
         async with self.lock:
             self.visited_urls.add(url)
+
+        # Ignorovat nečlánkové URL
+        if "autor" in url or "tag" in url or "kategorie" in url:
+            logging.info(f"Ignorováno (nečlánek): {url}")
+            return
 
         if await self.is_article_url(url):
             article_data = await self.parse_article(url)
@@ -251,12 +259,16 @@ class MultiSiteCrawler:
                             new_url = urljoin(url, link["href"])
                             parsed = urlparse(new_url)
 
+                            # Ignorovat nečlánkové URL
+                            if "autor" in new_url or "tag" in new_url or "kategorie" in new_url:
+                                continue
+
                             if any(site in parsed.netloc for site in SITE_CONFIG) and new_url not in self.visited_urls:
-                                await self.queue.put(new_url)
-                                logging.info(f"Přidáno do fronty: {new_url}")
+                                await self.queue.put((new_url, depth + 1))
+                                logging.info(f"Přidáno do fronty: {new_url} (hloubka: {depth + 1})")
             except Exception as e:
                 logging.error(f"Chyba při zpracování {url}: {str(e)}")
-
+                
     async def worker(self):
         while True:
             url = await self.queue.get()
