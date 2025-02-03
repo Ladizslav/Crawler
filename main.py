@@ -12,10 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 # Konfigurace
 MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB
 OUTPUT_FILE = "multi_site_articles.json"
-CONCURRENT_REQUESTS = 100  # Zvýšeno pro rychlejší crawling
-MAX_URLS = 1000000  # Velké číslo, aby se ignoroval limit počtu URL
+CONCURRENT_REQUESTS = 50  # Sníženo pro stabilitu
 REQUEST_DELAY = 0.5
-MAX_DEPTH = 3  # Maximální hloubka procházení
 START_URLS = [
     "https://www.idnes.cz",
     "https://www.novinky.cz",
@@ -66,13 +64,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 class MultiSiteCrawler:
     def __init__(self):
         self.visited_urls = set()
-        self.queue = asyncio.Queue()
-        self.lock = asyncio.Lock()
         self.session = None
         self.file_size = 0
         self.article_count = 0
         self.executor = ThreadPoolExecutor(max_workers=4)
         self.articles = []
+        self.lock = asyncio.Lock()
 
     async def initialize(self):
         self.session = aiohttp.ClientSession(
@@ -106,9 +103,7 @@ class MultiSiteCrawler:
                 )
 
                 # Pokud stránka má selektor pro titul a obsah, považujeme ji za článek
-                title = soup.select_one(config["selectors"]["title"])
-                content = soup.select_one(config["selectors"]["content"])
-                if title and content and len(content.text.strip()) > 100:  # Minimální délka obsahu
+                if soup.select_one(config["selectors"]["title"]) and soup.select_one(config["selectors"]["content"]):
                     return True
 
         except Exception as e:
@@ -155,8 +150,8 @@ class MultiSiteCrawler:
             self.articles.append(data)
             self.article_count += 1
 
-            # Uložení každých 100 článků nebo při dosažení maximální velikosti
-            if len(self.articles) % 100 == 0 or self.file_size >= MAX_FILE_SIZE:
+            # Uložení každých 10 článků nebo při dosažení maximální velikosti
+            if len(self.articles) % 10 == 0 or self.file_size >= MAX_FILE_SIZE:
                 self.save_to_json()
                 self.articles = []
 
@@ -224,16 +219,16 @@ class MultiSiteCrawler:
             logging.error(f"Chyba při zpracování {url}: {str(e)}")
             return None
 
-    async def process_url(self, url, depth=0):
-        if url in self.visited_urls or depth > MAX_DEPTH:
+    async def process_url(self, url):
+        if url in self.visited_urls:
             return
 
         async with self.lock:
             self.visited_urls.add(url)
 
-        # Ignorovat nečlánkové URL
-        if "autor" in url or "tag" in url or "kategorie" in url:
-            logging.info(f"Ignorováno (nečlánek): {url}")
+        # Ignorovat neplatné nebo nečlánkové URL
+        if "undefined" in url or "ucet" in url or "prihlasit" in url or "podminky" in url or "tiraz" in url:
+            logging.info(f"Ignorováno (neplatné URL): {url}")
             return
 
         if await self.is_article_url(url):
@@ -259,38 +254,21 @@ class MultiSiteCrawler:
                             new_url = urljoin(url, link["href"])
                             parsed = urlparse(new_url)
 
-                            # Ignorovat nečlánkové URL
-                            if "autor" in new_url or "tag" in new_url or "kategorie" in new_url:
+                            # Ignorovat neplatné nebo nečlánkové URL
+                            if "undefined" in new_url or "ucet" in new_url or "prihlasit" in new_url or "podminky" in new_url or "tiraz" in new_url:
                                 continue
 
                             if any(site in parsed.netloc for site in SITE_CONFIG) and new_url not in self.visited_urls:
-                                await self.queue.put((new_url, depth + 1))
-                                logging.info(f"Přidáno do fronty: {new_url} (hloubka: {depth + 1})")
+                                await self.process_url(new_url)  # Rekurzivní volání
             except Exception as e:
                 logging.error(f"Chyba při zpracování {url}: {str(e)}")
-                
-    async def worker(self):
-        while True:
-            url = await self.queue.get()
-            try:
-                await self.process_url(url)
-            finally:
-                self.queue.task_done()
 
     async def run(self):
         await self.initialize()
 
-        for url in START_URLS:
-            await self.queue.put(url)
-
-        workers = [asyncio.create_task(self.worker()) for _ in range(CONCURRENT_REQUESTS)]
-
-        while self.file_size < MAX_FILE_SIZE:
-            logging.info(f"Velikost fronty: {self.queue.qsize()} | Článků uloženo: {self.article_count} | Velikost souboru: {self.file_size/1024/1024:.2f} MB")
-            await asyncio.sleep(1)
-
-        for worker in workers:
-            worker.cancel()
+        # Spustíme zpracování počátečních URL
+        tasks = [self.process_url(url) for url in START_URLS]
+        await asyncio.gather(*tasks)
 
         await self.close()
         logging.info(f"Konečná velikost souboru: {self.file_size/1024/1024:.2f} MB")
