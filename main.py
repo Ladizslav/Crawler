@@ -48,7 +48,7 @@ SITE_CONFIG = {
             "images": ".gallery img"
         },
     },
-    "wikipedia.org": {
+    "cs.wikipedia.org": {
         "selectors": {
             "title": "h1#firstHeading",
             "content": "div#mw-content-text",
@@ -84,8 +84,8 @@ class MultiSiteCrawler:
         self.save_to_json()  
 
     def get_site_config(self, domain):
-        if domain == "wikipedia.org":
-            return SITE_CONFIG["wikipedia.org"]
+        if domain == "cs.wikipedia.org":
+            return SITE_CONFIG["cs.wikipedia.org"]
         elif domain == "idnes.cz":
             return SITE_CONFIG["idnes.cz"]
         elif domain == "novinky.cz":
