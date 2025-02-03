@@ -18,7 +18,7 @@ REQUEST_DELAY = 0.5
 START_URLS = [
     "https://www.idnes.cz",
     "https://www.novinky.cz",
-    "https://cs.wikipedia.org"
+    "https://wikipedia.org"
 ]
 
 SITE_CONFIG = {
@@ -47,7 +47,7 @@ SITE_CONFIG = {
             "images": ".gallery img"
         },
     },
-    "cs.wikipedia.org": {
+    "wikipedia.org": {
         "selectors": {
             "title": "h1#firstHeading",
             "content": "div#mw-content-text",
@@ -170,7 +170,6 @@ class MultiSiteCrawler:
             return ""
 
         try:
-            # Přidáno více formátů pro parsování data
             for fmt in ["%d. %m. %Y v %H:%M", "%Y-%m-%dT%H:%M:%S", "%d %b %Y", "%d. %m. %Y", "Stránka byla naposledy editována %d. %m. %Y v %H:%M"]:
                 try:
                     dt = datetime.strptime(date_str, fmt)
@@ -245,12 +244,16 @@ class MultiSiteCrawler:
                             lambda: BeautifulSoup(html, "lxml") if "xml" not in response.headers.get("Content-Type", "").lower() else BeautifulSoup(html, features="xml")
                         )
 
-                        for link in soup.find_all("a", href=True):
+                        links = soup.find_all("a", href=True)
+                        logging.info(f"Na stránce {url} nalezeno {len(links)} odkazů.")
+
+                        for link in links:
                             new_url = urljoin(url, link["href"])
                             parsed = urlparse(new_url)
 
                             if any(site in parsed.netloc for site in SITE_CONFIG) and new_url not in self.visited_urls:
                                 await self.queue.put(new_url)
+                                logging.info(f"Přidáno do fronty: {new_url}")
             except Exception as e:
                 logging.error(f"Chyba při zpracování {url}: {str(e)}")
 
@@ -270,8 +273,8 @@ class MultiSiteCrawler:
 
         workers = [asyncio.create_task(self.worker()) for _ in range(CONCURRENT_REQUESTS)]
 
-        # Změna: Pokračuj, dokud není dosaženo maximální velikosti souboru
         while self.file_size < MAX_FILE_SIZE:
+            logging.info(f"Velikost fronty: {self.queue.qsize()} | Článků uloženo: {self.article_count} | Velikost souboru: {self.file_size/1024/1024:.2f} MB")
             await asyncio.sleep(1)
 
         for worker in workers:
