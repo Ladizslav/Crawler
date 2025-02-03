@@ -10,9 +10,10 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 
 # Konfigurace
-MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024 
+MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB
 OUTPUT_FILE = "multi_site_articles.json"
-CONCURRENT_REQUESTS = 100   
+CONCURRENT_REQUESTS = 100  # Zvýšeno pro rychlejší crawling
+MAX_URLS = 1000000  # Velké číslo, aby se ignoroval limit počtu URL
 REQUEST_DELAY = 0.5
 START_URLS = [
     "https://www.idnes.cz",
@@ -100,7 +101,7 @@ class MultiSiteCrawler:
                 loop = asyncio.get_event_loop()
                 soup = await loop.run_in_executor(
                     self.executor,
-                    lambda: BeautifulSoup(html, "lxml")
+                    lambda: BeautifulSoup(html, "lxml") if "xml" not in response.headers.get("Content-Type", "").lower() else BeautifulSoup(html, features="xml")
                 )
 
                 # Pokud stránka má selektor pro titul a obsah, považujeme ji za článek
@@ -151,6 +152,7 @@ class MultiSiteCrawler:
             self.articles.append(data)
             self.article_count += 1
 
+            # Uložení každých 100 článků nebo při dosažení maximální velikosti
             if len(self.articles) % 100 == 0 or self.file_size >= MAX_FILE_SIZE:
                 self.save_to_json()
                 self.articles = []
@@ -168,7 +170,8 @@ class MultiSiteCrawler:
             return ""
 
         try:
-            for fmt in ["%d. %m. %Y v %H:%M", "%Y-%m-%dT%H:%M:%S", "%d %b %Y", "%d. %m. %Y"]:
+            # Přidáno více formátů pro parsování data
+            for fmt in ["%d. %m. %Y v %H:%M", "%Y-%m-%dT%H:%M:%S", "%d %b %Y", "%d. %m. %Y", "Stránka byla naposledy editována %d. %m. %Y v %H:%M"]:
                 try:
                     dt = datetime.strptime(date_str, fmt)
                     return dt.isoformat()
@@ -193,7 +196,7 @@ class MultiSiteCrawler:
                 loop = asyncio.get_event_loop()
                 soup = await loop.run_in_executor(
                     self.executor,
-                    lambda: BeautifulSoup(html, "lxml")
+                    lambda: BeautifulSoup(html, "lxml") if "xml" not in response.headers.get("Content-Type", "").lower() else BeautifulSoup(html, features="xml")
                 )
 
                 selectors = config.get("selectors", {})
@@ -239,7 +242,7 @@ class MultiSiteCrawler:
                         loop = asyncio.get_event_loop()
                         soup = await loop.run_in_executor(
                             self.executor,
-                            lambda: BeautifulSoup(html, "lxml")
+                            lambda: BeautifulSoup(html, "lxml") if "xml" not in response.headers.get("Content-Type", "").lower() else BeautifulSoup(html, features="xml")
                         )
 
                         for link in soup.find_all("a", href=True):
@@ -267,6 +270,7 @@ class MultiSiteCrawler:
 
         workers = [asyncio.create_task(self.worker()) for _ in range(CONCURRENT_REQUESTS)]
 
+        # Změna: Pokračuj, dokud není dosaženo maximální velikosti souboru
         while self.file_size < MAX_FILE_SIZE:
             await asyncio.sleep(1)
 
