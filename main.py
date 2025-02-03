@@ -136,7 +136,7 @@ class MultiSiteCrawler:
 
         # Vyprázdnění paměti
         self.articles = []
-        
+
     async def save_article(self, data):
         """Přidá článek do seznamu a pravidelně ukládá do souboru."""
         async with self.lock:
@@ -157,14 +157,19 @@ class MultiSiteCrawler:
         if not date_str:
             return ""
 
-        date_cleaned = " ".join(re.findall(r"[0-9]+|[a-zA-Z]+", date_str))
+        match = re.search(r"(\d{1,2})\.\s?(\d{1,2})\.\s?(\d{4})\s?v\s?(\d{1,2}):(\d{2})", date_str)
+        if match:
+            day, month, year, hour, minute = match.groups()
+            date_cleaned = f"{year}-{month}-{day} {hour}:{minute}"
+            try:
+                dt = datetime.strptime(date_cleaned, "%Y-%m-%d %H:%M")
+                return dt.isoformat()
+            except ValueError:
+                logging.warning(f"Chyba parsování data: {date_str}")
+                return ""
 
-        try:
-            dt = date_parser.parse(date_cleaned, fuzzy=True)
-            return dt.isoformat()
-        except Exception:
-            logging.warning(f"Chyba parsování data: {date_str}")
-            return ""
+        logging.warning(f"Neznámý formát data: {date_str}")
+        return ""
 
     async def parse_article(self, url):
         try:
