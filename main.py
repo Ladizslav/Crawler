@@ -12,8 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 # Konfigurace
 MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB
 OUTPUT_FILE = "multi_site_articles.json"
-CONCURRENT_REQUESTS = 50  # Sníženo pro stabilitu
-REQUEST_DELAY = 0.5
+CONCURRENT_REQUESTS = 100  # Sníženo pro stabilitu
+REQUEST_DELAY = 0.1
 START_URLS = [
     "https://www.idnes.cz",
     "https://www.novinky.cz",
@@ -280,7 +280,7 @@ class MultiSiteCrawler:
                             await self.process_url(new_url)  # Rekurzivní volání
             except Exception as e:
                 logging.error(f"Chyba při zpracování {url}: {str(e)}")
-                
+
     async def run(self):
         await self.initialize()
 
