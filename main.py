@@ -272,30 +272,30 @@ class MultiSiteCrawler:
             except Exception as e:
                 logging.error(f"Chyba při zpracování {url}: {str(e)}")
 
-        async def worker(self):
-            while True:
-                url = await self.queue.get()
-                try:
-                    await self.process_url(url)
-                finally:
-                    self.queue.task_done()
+    async def worker(self):
+        while True:
+            url = await self.queue.get()
+            try:
+                await self.process_url(url)
+            finally:
+                self.queue.task_done()
 
-        async def run(self):
-            await self.initialize()
-            
-            for url in START_URLS:
-                await self.queue.put(url)
+    async def run(self):
+        await self.initialize()
+        
+        for url in START_URLS:
+            await self.queue.put(url)
 
-            workers = [asyncio.create_task(self.worker()) for _ in range(CONCURRENT_REQUESTS)]
-            
-            while not self.queue.empty() or self.article_count < MAX_URLS:
-                await asyncio.sleep(1)
+        workers = [asyncio.create_task(self.worker()) for _ in range(CONCURRENT_REQUESTS)]
+        
+        while not self.queue.empty() or self.article_count < MAX_URLS:
+            await asyncio.sleep(1)
 
-            for worker in workers:
-                worker.cancel()
-            
-            await self.close()
-            logging.info(f"Konečná velikost souboru: {self.file_size/1024/1024:.2f} MB")
+        for worker in workers:
+            worker.cancel()
+        
+        await self.close()
+        logging.info(f"Konečná velikost souboru: {self.file_size/1024/1024:.2f} MB")
 
 if __name__ == "__main__":
     crawler = MultiSiteCrawler()
