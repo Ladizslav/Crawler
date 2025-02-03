@@ -14,7 +14,7 @@ MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024
 OUTPUT_FILE = "multi_site_articles.json" 
 CONCURRENT_REQUESTS = 5000
 MAX_URLS = 10000  
-REQUEST_DELAY = 0.1
+REQUEST_DELAY = 0.5
 START_URLS = [
     "https://www.idnes.cz",
     "https://www.novinky.cz",
