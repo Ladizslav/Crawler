@@ -109,18 +109,34 @@ class MultiSiteCrawler:
         return re.sub(r'\s+', ' ', text).strip()
 
     def save_to_json(self):
-        """Uloží všechny články do JSON souboru."""
+        """Uloží články do JSON souboru bez přepisování již existujících dat."""
         if not self.articles:
             return
 
+        existing_data = []
+        
+        # Pokud soubor existuje, načteme jeho obsah
+        if os.path.exists(OUTPUT_FILE):
+            try:
+                with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
+                    existing_data = json.load(f)
+            except (json.JSONDecodeError, FileNotFoundError):
+                logging.warning("Soubor je poškozen nebo prázdný. Vytvářím nový.")
+
+        # Přidáme nové články k existujícím
+        existing_data.extend(self.articles)
+
         try:
             with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.articles, f, indent=4, ensure_ascii=False)
+                json.dump(existing_data, f, indent=4, ensure_ascii=False)
             self.file_size = os.path.getsize(OUTPUT_FILE)
-            logging.info(f"Uloženo {len(self.articles)} článků do {OUTPUT_FILE}")
+            logging.info(f"Uloženo {len(existing_data)} článků do {OUTPUT_FILE}")
         except Exception as e:
             logging.error(f"Chyba při ukládání do JSON: {str(e)}")
 
+        # Vyprázdnění paměti
+        self.articles = []
+        
     async def save_article(self, data):
         """Přidá článek do seznamu a pravidelně ukládá do souboru."""
         async with self.lock:
@@ -136,6 +152,19 @@ class MultiSiteCrawler:
                 return False
 
         return True
+
+    def parse_date(date_str):
+        if not date_str:
+            return ""
+
+        date_cleaned = " ".join(re.findall(r"[0-9]+|[a-zA-Z]+", date_str))
+
+        try:
+            dt = date_parser.parse(date_cleaned, fuzzy=True)
+            return dt.isoformat()
+        except Exception:
+            logging.warning(f"Chyba parsování data: {date_str}")
+            return ""
 
     async def parse_article(self, url):
         try:
@@ -171,7 +200,7 @@ class MultiSiteCrawler:
                     date_str = date_element.get("datetime") or date_element.text
                     try:
                         dt = date_parser.parse(date_str)
-                        article_data["date"] = dt.isoformat()
+                        article_data["date"] = parse_date(date_element.text) if date_element else ""
                     except Exception as e:
                         logging.warning(f"Chyba parsování data: {e}")
 
@@ -179,6 +208,7 @@ class MultiSiteCrawler:
         except Exception as e:
             logging.error(f"Chyba při zpracování {url}: {str(e)}")
             return None
+
 
     async def process_url(self, url):
         if url in self.visited_urls:
