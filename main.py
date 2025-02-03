@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024 
 OUTPUT_FILE = "multi_site_articles.json" 
-CONCURRENT_REQUESTS = 50000
+CONCURRENT_REQUESTS = 5000
 REQUEST_DELAY = 0.1
 START_URLS = [
     "https://www.idnes.cz",
@@ -94,7 +94,7 @@ class MultiSiteCrawler:
         self.executor.shutdown()
         self.save_to_json()  
 
-    def get_site_config(domain):
+    def get_site_config(self, domain):  
         if domain in SITE_CONFIG:
             return SITE_CONFIG[domain]
         
@@ -166,6 +166,7 @@ class MultiSiteCrawler:
 
         return True
 
+    @staticmethod
     def parse_date(date_str):
         if not date_str:
             return ""
@@ -216,11 +217,7 @@ class MultiSiteCrawler:
                 date_element = soup.select_one(selectors["date"])
                 if date_element:
                     date_str = date_element.get("datetime") or date_element.text
-                    try:
-                        dt = date_parser.parse(date_str)
-                        article_data["date"] = parse_date(date_element.text) if date_element else ""
-                    except Exception as e:
-                        logging.warning(f"Chyba parsování data: {e}")
+                    article_data["date"] = self.parse_date(date_str)  
 
                 return article_data
         except Exception as e:
