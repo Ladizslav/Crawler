@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Single Article View</title>
+  <style>
+    .article-container {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    .navigation {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 20px;
+    }
+    .page-input {
+      margin: 20px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="article-container">
+    <h1 id="article-title">Loading article...</h1>
+    <div id="article-content"></div>
+    
+    <div class="page-input">
+      <input type="number" id="pageNumber" min="1" placeholder="Page number">
+      <button onclick="goToPage()">Go</button>
+    </div>
+    
+    <div class="navigation">
+      <button id="prevBtn" onclick="navigate(-1)">Previous</button>
+      <span id="pageInfo">Page 1 of 1</span>
+      <button id="nextBtn" onclick="navigate(1)">Next</button>
+    </div>
+  </div>
+
+  <script>
+    let currentPage = 1;
+    let totalPages = 1;
+    const articleId = new URLSearchParams(window.location.search).get('id');
+
+    // Initialize based on URL
+    if (articleId) {
+      loadSingleArticle(articleId);
+    } else {
+      loadPage(currentPage);
+      updateBrowserHistory();
+    }
+
+    // Load single article view
+    async function loadSingleArticle(id) {
+      try {
+        const response = await fetch(`http://your-server-ip:3001/api/articles/${id}`);
+        const article = await response.json();
+        
+        document.getElementById('article-title').textContent = article.title || 'Untitled';
+        document.getElementById('article-content').innerHTML = article.content || 'No content available';
+        
+        // Hide pagination controls
+        document.querySelector('.navigation').style.display = 'none';
+        document.querySelector('.page-input').style.display = 'none';
+      } catch (error) {
+        console.error('Error loading article:', error);
+      }
+    }
+
+    // Load paginated view
+    async function loadPage(page) {
+      try {
+        const response = await fetch(`http://79.76.123.80:3001/api/articles?page=${page}`);
+        const data = await response.json();
+        
+        if (data.currentArticle) {
+          document.getElementById('article-title').textContent = data.currentArticle.title || 'Untitled';
+          document.getElementById('article-content').innerHTML = data.currentArticle.content || 'No content available';
+          
+          currentPage = data.currentPage;
+          totalPages = data.totalPages;
+          updatePageInfo();
+          updateButtonStates();
+          updateBrowserHistory();
+        }
+      } catch (error) {
+        console.error('Error loading page:', error);
+      }
+    }
+
+    function navigate(direction) {
+      const newPage = currentPage + direction;
+      if (newPage > 0 && newPage <= totalPages) {
+        loadPage(newPage);
+      }
+    }
+
+    function goToPage() {
+      const page = parseInt(document.getElementById('pageNumber').value);
+      if (page && page > 0 && page <= totalPages) {
+        loadPage(page);
+      }
+    }
+
+    function updatePageInfo() {
+      document.getElementById('pageInfo').textContent = `Page ${currentPage} of ${totalPages}`;
+      document.getElementById('pageNumber').value = currentPage;
+    }
+
+    function updateButtonStates() {
+      document.getElementById('prevBtn').disabled = currentPage <= 1;
+      document.getElementById('nextBtn').disabled = currentPage >= totalPages;
+    }
+
+    function updateBrowserHistory() {
+      window.history.pushState({ page: currentPage }, '', `?page=${currentPage}`);
+    }
+
+    // Handle browser back/forward
+    window.addEventListener('popstate', (event) => {
+      if (event.state && event.state.page) {
+        loadPage(event.state.page);
+      }
+    });
+  </script>
+</body>
+</html>
