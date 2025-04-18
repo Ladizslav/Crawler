@@ -52,7 +52,7 @@
     // Load single article view
     async function loadSingleArticle(id) {
       try {
-        const response = await fetch(`http://your-server-ip:3001/api/articles/${id}`);
+        const response = await fetch(`http://79.76.123.80:3001/api/articles/${id}`);
         const article = await response.json();
         
         document.getElementById('article-title').textContent = article.title || 'Untitled';

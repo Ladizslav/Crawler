@@ -1,0 +1,42 @@
+/* global use, db */
+// Nastavte správnou databázi (webnews)
+use('webnews');
+
+// Funkce pro import velkých JSON souborů po částech
+async function importLargeJson() {
+  try {
+    // 1. Smazání existující kolekce (volitelné)
+    db.idnes.drop();
+    console.log('Kolekce byla smazána (pokud existovala)');
+
+    // 2. Načtení a rozdělení dat
+    const fs = require('fs');
+    const data = JSON.parse(fs.readFileSync('data_400mb.json'));
+    const chunkSize = 10000; // Počet dokumentů v jednom chunk
+    
+    // 3. Import po částech
+    for (let i = 0; i < data.length; i += chunkSize) {
+      const chunk = data.slice(i, Math.min(i + chunkSize, data.length));
+      await db.idnes.insertMany(chunk);
+      console.log(`Importováno ${chunk.length} dokumentů (${i}-${i+chunk.length-1})`);
+    }
+
+    // Ověření dat
+    const docCount = await db.idnes.countDocuments();
+    console.log(`Aktuální počet dokumentů v kolekci: ${docCount}`);
+
+    // Náhled prvního dokumentu
+    const sampleDoc = await db.idnes.findOne();
+    console.log('Ukázkový dokument:', sampleDoc);
+
+    return `Celkem importováno ${data.length} dokumentů`;
+  } catch (error) {
+    console.error('Chyba při importu:', error);
+    throw error;
+  }
+}
+
+// Spuštění importu
+importLargeJson()
+  .then(console.log)
+  .catch(console.error);
